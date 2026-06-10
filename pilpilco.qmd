@@ -1,0 +1,449 @@
+---
+title: "Métricas de Paisaje con R"
+subtitle: "¿Se ha fragmentado la cuenca del río Pilpilco entre 2000 y 2022?"
+author: "M. Ortiz"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+execute:
+  echo: true
+---
+
+# Introducción
+
+## Contexto
+
+La fragmentación del paisaje puede modificar el tamaño de los hábitats, la conectividad, los efectos de borde y la diversidad biológica. En esta actividad utilizaremos datos de MapBiomas para evaluar cambios en la cuenca del río Pilpilco entre 2000 y 2022.
+
+::: {.callout-note}
+## Objetivos
+
+- Preparar datos espaciales para análisis de paisaje.
+- Comprender la importancia de los sistemas de referencia (CRS).
+- Calcular métricas a nivel de parche, clase y paisaje.
+- Interpretar evidencia de fragmentación.
+- Comunicar resultados ecológicos.
+:::
+
+# La pregunta ecológica
+
+¿Se ha fragmentado la cuenca del río Pilpilco entre 2000 y 2022?
+
+# Preparación
+
+```{r}
+gc()
+rm(list = ls())
+
+library(landscapemetrics)
+library(tidyverse)
+library(terra)
+library(tidyterra)
+library(cowplot)
+```
+
+# Carga de datos
+
+```{r}
+cuencas_biobio <- vect("cuencas_biobio.shp")
+
+lc_2000 <- rast("chile_coverage_2000.tif")
+lc_2022 <- rast("chile_coverage_2022.tif")
+```
+
+## Exploración inicial
+
+```{r}
+biobio_00 <- crop(lc_2000, cuencas_biobio)
+biobio_22 <- crop(lc_2022, cuencas_biobio)
+
+plot(biobio_00)
+```
+
+# Un problema frecuente: CRS
+
+Intentemos aplicar una máscara.
+
+```{r}
+biobio_m <- mask(biobio_00, cuencas_biobio)
+```
+
+¿Por qué falla?
+
+```{r}
+crs(cuencas_biobio)
+crs(cuencas_biobio) <- crs(biobio_00)
+```
+
+## Aplicar máscara
+
+```{r}
+biobio_00_m <- mask(biobio_00, cuencas_biobio)
+biobio_22_m <- mask(biobio_22, cuencas_biobio)
+```
+
+# Selección de la cuenca
+
+## ¿Qué subcuencas existen?
+
+```{r}
+cuencas_biobio$NOM_SUBC
+```
+
+Trabajaremos con la cuenca del río Pilpilco.
+
+```{r}
+pilpilco <- subset(
+  cuencas_biobio,
+  cuencas_biobio$NOM_SUBC == "Rio Pilpilco"
+)
+
+ventana_zoom <- ext(pilpilco)
+
+pilpilco_00 <- crop(biobio_00, ventana_zoom)
+pilpilco_22 <- crop(biobio_22, ventana_zoom)
+
+pilpilco_00 <- mask(pilpilco_00, pilpilco)
+pilpilco_22 <- mask(pilpilco_22, pilpilco)
+
+
+#con pipe (más avanzado)
+# pilpilco_00<-biobio_00 %>% 
+#   crop(ventana_zoom) %>% 
+#   mask(pilpilco)
+
+#con pipe (más avanzado)
+# pilpilco_22<-biobio_22 %>% 
+#   crop(ventana_zoom) %>% 
+#   mask(pilpilco)
+
+
+
+
+```
+::: {.callout-tip}
+### Pregunta
+
+¿Cuál es la diferencia entre `crop()` y `mask()`?
+:::
+
+# ¿Está listo el paisaje para landscapemetrics?
+
+```{r}
+check_landscape(pilpilco_00)
+check_landscape(pilpilco_22)
+```
+
+::: {.callout-warning}
+Dice "No OK". En este caso, las métricas de paisaje requieren coordenadas proyectadas (metros), no coordenadas geográficas (grados).
+:::
+
+## Reproyección a UTM 18S
+
+```{r}
+target_crs <- "EPSG:32718" #UTM 18S
+
+pil_00 <- project(pilpilco_00, target_crs, method = "near")
+pil_22 <- project(pilpilco_22, target_crs, method = "near")
+
+check_landscape(pil_00)
+check_landscape(pil_22)
+```
+
+### Discusión
+
+¿Por qué utilizamos `method = "near"` y no interpolación bilineal?
+
+# Explorando el paisaje
+
+## Mapas con la leyenda oficial de MapBiomas
+Primero, cargar la leyenda, averiguar formato y filtrar por clases presentes.
+```{r}
+leyenda_completa <- read.csv("leyenda_completa.csv")
+
+pil_00 <- as.int(pil_00)
+pil_22 <- as.int(pil_22)
+
+valores_presentes <- unique(values(pil_00))
+leyenda_filtrada1 <- leyenda_completa %>%
+  filter(class %in% valores_presentes)
+
+levels(pil_00) <- leyenda_filtrada1
+
+valores_presentes <- unique(values(pil_22))
+leyenda_filtrada2 <- leyenda_completa %>%
+  filter(class %in% valores_presentes)
+
+levels(pil_22) <- leyenda_filtrada2
+```
+
+Después, graficar con ggplot:
+
+```{r}
+# 2000
+p1 <- ggplot() +
+  geom_spatraster(data = pil_00, aes(fill = descripcion)) +
+  scale_fill_manual(
+    values = leyenda_filtrada1$color,
+    breaks = leyenda_filtrada1$descripcion,
+    name = "Cobertura MapBiomas",
+    na.value = "transparent"
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Cobertura de Suelo - Cuenca Pilpilco 2000",
+    subtitle = "Datos de MapBiomas"
+  )
+
+#2022
+
+p2 <- ggplot() +
+  geom_spatraster(data = pil_22, aes(fill = descripcion)) +
+  scale_fill_manual(
+    values = leyenda_filtrada2$color,
+    breaks = leyenda_filtrada2$descripcion,
+    name = "Cobertura MapBiomas",
+    na.value = "transparent"
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Cobertura de Suelo - Cuenca Pilpilco 2022",
+    subtitle = "Datos de MapBiomas"
+  )
+```
+Visualizar individualmente, y en un solo gráfico
+```{r}
+p1
+p2
+
+#combinar en uno:
+plot_grid(p1, p2, ncol = 1, nrow = 2)
+```
+
+::: {.callout-tip}
+Antes de calcular métricas:
+
+- ¿Qué coberturas parecen aumentar?
+- ¿Qué coberturas parecen disminuir?
+- ¿Dónde observas indicios de fragmentación?
+:::
+
+# Análisis a nivel de parche
+
+Un parche corresponde a un conjunto continuo de píxeles de una misma cobertura.
+
+```{r}
+parches_00 <- calculate_lsm(pil_00, level = "patch", metric = c("area", "cai")) %>% 
+  mutate(year = "2000")
+parches_22 <- calculate_lsm(pil_22, level = "patch", metric = c("area", "cai")) %>% 
+  mutate(year = "2022")
+
+analisis_parches <- bind_rows(parches_00, parches_22) %>%
+  left_join(leyenda_completa, by = "class")
+```
+
+## Tamaño de parches por cobertura
+
+```{r}
+
+# Gráfico 1: distribución del tamaño de parches para todas las clases
+g_parches_todo <- analisis_parches %>% 
+  filter(metric == "area") %>% # Quitamos el filtro de clases para incluir todas
+  ggplot(aes(x = year, y = value, fill = year)) +
+  geom_boxplot(outlier.shape = 16, outlier.alpha = 0.5, width = 0.6) +
+  scale_y_log10() + # escala logarítmica porque los tamaños varían de <1 ha a miles de ha
+  scale_fill_manual(values = c("2000" = "#457764", "2022" = "#cccccc")) +
+  facet_wrap(~descripcion, scales = "free_y") + #permite que cada panel adapte su propio eje Y
+  theme_bw() +
+  labs(
+    title = "Análisis Área (ha) por tipo de cobertura Parches, Cuenca Pilpilco, 2000-2022",
+    x = "Año",
+    y = "Área del Parche (hectáreas)"
+  ) +
+  theme_bw()
+
+g_parches_todo
+```
+
+### Interpretación
+
+¿Qué observaciones tienes sobre cambios en las métricas?
+
+## Formación forestal (Área)
+Vamos a observar una cobertura (clase) en particular, al nivel de parche:
+```{r}
+# Gráfico 1a: distribución del tamaño de parches para sola una clase
+g_parches_forestal <- analisis_parches %>% 
+  filter(metric == "area", class == 3) %>% #aqui el codigo de la leyenda, formación forestal
+  ggplot(aes(x = year, y = value, fill = year)) +
+  geom_boxplot(outlier.shape = 16, outlier.alpha = 0.5, width = 0.6) +
+  scale_fill_manual(values = c("2000" = "#457764", "2022" = "#cccccc")) +
+  scale_y_log10() + 
+  theme_bw() +
+  labs(
+    title = "Análisis Tamaño Parches Formación Forestal, Cuenca Pilpilco, 2000-2022",
+    x = "Año",
+    y = "Área del Parche (hectáreas)"
+  ) +
+  theme_bw()
+
+g_parches_forestal
+```
+
+## Formación forestal, Área núcleo (CAI)
+
+```{r}
+# Gráfico 1b: otra métrica
+g_parches_forestal_cai <- analisis_parches %>% 
+  filter(metric == "cai", class == 3)  %>%
+  ggplot(aes(x = year, y = value, fill = year)) +
+  geom_boxplot(outlier.shape = 16, outlier.alpha = 0.5, width = 0.6) +
+  scale_fill_manual(values = c("2000" = "#457764", "2022" = "#cccccc")) +
+  # scale_y_log10() + 
+  theme_bw() +
+  labs(
+    title = "Análisis CAI Parches Formación Forestal, Cuenca Pilpilco, 2000-2022",
+    x = "Año",
+    y = "Área del Parche (hectáreas)"
+  ) +
+  theme_bw()
+g_parches_forestal_cai
+```
+
+::: {.callout-note}
+CAI mide la proporción del parche que permanece alejada de los bordes.
+:::
+
+# Análisis a nivel de clase
+
+```{r}
+clase_00 <- calculate_lsm(pil_00, level = "class", metric = c("ca", "np", "pland")) %>% mutate(year = "2000")
+clase_22 <- calculate_lsm(pil_22, level = "class", metric = c("ca", "np", "pland")) %>% mutate(year = "2022")
+
+analisis_clases <- bind_rows(clase_00, clase_22) %>%
+  left_join(leyenda_completa, by = "class")
+```
+
+## Dominancia del paisaje (PLAND)
+
+```{r}
+g_clase_pland <- analisis_clases %>%
+  filter(metric == "pland") %>%
+  ggplot(aes(x = reorder(descripcion, value), y = value, fill = year)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("2000" = "#457764", "2022" = "#cccccc")) +
+  theme_bw() +
+  labs(
+    title = "Cambios en la Dominancia del Paisaje (2000 vs 2022)",
+    subtitle = "Nivel de Clase: Porcentaje de la cuenca ocupado por cobertura",
+    x = "Tipo de Cobertura (MapBiomas)",
+    y = "Porcentaje del Paisaje (%)",
+    fill = "Año"
+  )
+g_clase_pland
+```
+
+### Pregunta
+
+¿Qué coberturas ganaron o perdieron importancia relativa?
+
+## Evidencia de fragmentación
+
+Un patrón clásico es:
+
+- CA ↓
+- NP ↑
+
+```{r}
+g_clase_frag <- analisis_clases %>%
+  filter(metric %in% c("ca", "np")) %>%
+  mutate(
+    year = as.factor(year),
+    value = as.numeric(value),
+    metric = recode(metric, ca = "Área Total (ha)", np = "N° Parches")
+  ) %>%
+  ggplot(aes(x = year, y = value, group = metric, color = metric, linetype = metric)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  facet_wrap(~descripcion, scales = "free_y") +
+  scale_color_manual(values = c("Área Total (ha)" = "#555555", "N° Parches" = "#4a7aab")) +
+  scale_linetype_manual(values = c("Área Total (ha)" = "solid", "N° Parches" = "dashed")) +
+  theme_bw() +
+  labs(
+    title = "Cambio en Fragmentación 2000–2022",
+    x = NULL, y = NULL, color = NULL, linetype = NULL
+  ) +
+  theme(legend.position = "bottom")
+g_clase_frag
+```
+
+# Análisis a nivel de paisaje
+
+```{r}
+paisaje_00 <- calculate_lsm(pil_00, level = "landscape", metric = c("shdi", "np", "pr", "contag")) %>% mutate(year = "2000")
+paisaje_22 <- calculate_lsm(pil_22, level = "landscape", metric = c("shdi", "np", "pr", "contag")) %>% mutate(year = "2022")
+
+analisis_paisaje <- bind_rows(paisaje_00, paisaje_22)
+```
+
+## Resumen numérico
+
+```{r}
+# Crear una tabla comparativa resumida 
+tabla_paisaje <- analisis_paisaje %>%
+  select(metric, value, year) %>%
+  pivot_wider(names_from = year, values_from = value) %>%
+  mutate(cambio_neto = `2022` - `2000`)
+tabla_paisaje
+```
+
+## Cambios en la estructura del paisaje
+
+```{r}
+g_paisaje <- analisis_paisaje %>%
+  filter(metric %in% c("shdi", "contag", "np", "pr")) %>%
+  mutate(
+    year = as.factor(year),
+    value = as.numeric(value),
+    metric = recode(metric, "shdi" = "Diversidad (Shannon)", "contag" = "Contagio (Agregación %)",
+                    "np" = "Número de Parches", "pr" = "Riqueza de Parches")
+  ) %>%                                                                          
+  ggplot(aes(x = year, y = value, group = metric, color = metric)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 4) +
+  facet_wrap(~metric, scales = "free_y") +
+  scale_color_brewer(palette = "Set1") +
+  theme_bw() +
+  labs(
+    title = "Análisis escala paisaje, Cuenca Pilpilco, 2000 y 2022",
+    x = "Año",
+    y = "Valor del Índice"
+  ) +
+  theme(legend.position = "none")
+g_paisaje
+```
+
+### Guía de interpretación
+
+| Métrica | Significado |
+|----------|----------|
+| SHDI | Diversidad del paisaje |
+| NP | Número total de parches |
+| PR | Riqueza de clases |
+| CONTAG | Agregación espacial |
+
+# Síntesis final
+
+Completa:
+
+> Entre 2000 y 2022 la cuenca del río Pilpilco se experimentó ... 
+
+Utiliza:
+
+- una métrica de parche,
+- una métrica de clase,
+- una métrica de paisaje.
+
